@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Admin WP-CLI Console
- * Description: Run WP-CLI commands safely with auto-detected plugin command cheatsheets and CLI add-on recommendations.
- * Version: 1.3.0
+ * Description: Run WP-CLI commands safely with auto-detected cheatsheets, command audit logs, and destructive command confirmations.
+ * Version: 1.4.0
  * Author: Custom
  * License: GPL-2.0+
  */
@@ -11,7 +11,6 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Ensure plugin status functions are available
 if (!function_exists('is_plugin_active')) {
     include_once(ABSPATH . 'wp-admin/includes/plugin.php');
 }
@@ -58,7 +57,7 @@ function wp_cli_console_detect_cli_capabilities() {
         'recommendations' => []
     ];
 
-    // 1. Gravity Forms
+    // Gravity Forms
     if (class_exists('GFForms')) {
         $gf_cli_active = is_plugin_active('gravityformscli/gravityformscli.php') || class_exists('GF_CLI');
         if ($gf_cli_active) {
@@ -76,7 +75,7 @@ function wp_cli_console_detect_cli_capabilities() {
         }
     }
 
-    // 2. WooCommerce
+    // WooCommerce
     if (class_exists('WooCommerce')) {
         $detected['cheatsheets']['WooCommerce'] = [
             'wc product list --format=json' => 'List products',
@@ -85,7 +84,7 @@ function wp_cli_console_detect_cli_capabilities() {
         ];
     }
 
-    // 3. Elementor
+    // Elementor
     if (defined('ELEMENTOR_VERSION')) {
         $detected['cheatsheets']['Elementor'] = [
             'elementor flush-css' => 'Regenerate CSS files',
@@ -94,7 +93,7 @@ function wp_cli_console_detect_cli_capabilities() {
         ];
     }
 
-    // 4. WP Rocket
+    // WP Rocket
     if (defined('WP_ROCKET_VERSION')) {
         $detected['cheatsheets']['WP Rocket'] = [
             'rocket clean' => 'Clear entire cache',
@@ -102,7 +101,7 @@ function wp_cli_console_detect_cli_capabilities() {
         ];
     }
 
-    // 5. Yoast SEO
+    // Yoast SEO
     if (defined('WPSEO_VERSION')) {
         $detected['cheatsheets']['Yoast SEO'] = [
             'yoast index --reindex' => 'Reindex site SEO data',
@@ -125,20 +124,35 @@ function wp_cli_console_render_page() {
     $json_data = null;
     $last_command = '';
 
-    // Handle Clearing Logs
     if (isset($_POST['clear_wp_cli_logs']) && check_admin_referer('clear_wp_cli_logs_action', 'clear_logs_nonce')) {
         update_option('wp_cli_console_logs', []);
         echo '<div class="notice notice-success is-dismissible"><p>Audit logs cleared.</p></div>';
     }
 
-    // Handle Executing Command
     if (isset($_POST['wp_cli_command']) && check_admin_referer('run_wp_cli_action', 'wp_cli_nonce')) {
         $raw_input = trim($_POST['wp_cli_command']);
         $last_command = $raw_input;
         $clean_command = preg_replace('/^wp\s+/', '', $raw_input);
 
         if (!empty($clean_command)) {
+            // High-risk patterns that require bypassing non-interactive prompts via --yes
+            $destructive_patterns = ['db drop', 'db reset', 'site empty', 'plugin delete', 'theme delete', 'user delete', 'search-replace'];
+            $is_destructive = false;
+
+            foreach ($destructive_patterns as $pattern) {
+                if (strpos($clean_command, $pattern) !== false) {
+                    $is_destructive = true;
+                    break;
+                }
+            }
+
+            // Auto-append --yes if needed so non-interactive execution doesn't hang
+            if ($is_destructive && strpos($clean_command, '--yes') === false) {
+                $clean_command .= ' --yes';
+            }
+
             wp_cli_console_log_command($raw_input);
+
             $wp_path = escapeshellarg(ABSPATH);
             $cmd = "wp " . $clean_command . " --path={$wp_path} 2>&1";
             $raw_output = trim(shell_exec($cmd));
@@ -206,7 +220,7 @@ function wp_cli_console_render_page() {
         </div>
 
         <!-- Command Input Form -->
-        <form method="post" action="" id="wp_cli_form">
+        <form method="post" action="" id="wp_cli_form" onsubmit="return validateCommandExecution();">
             <?php wp_nonce_field('run_wp_cli_action', 'wp_cli_nonce'); ?>
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 15px;">
                 <span style="font-family: monospace; font-weight: bold; font-size: 16px;">wp</span>
@@ -279,9 +293,38 @@ function wp_cli_console_render_page() {
     </div>
 
     <script>
+    function validateCommandExecution() {
+        const cmdInput = document.getElementById('wp_cli_command').value.trim().toLowerCase();
+        
+        // High-risk commands list
+        const dangerousCommands = [
+            'db drop',
+            'db reset',
+            'site empty',
+            'plugin delete',
+            'theme delete',
+            'user delete',
+            'search-replace'
+        ];
+
+        for (let i = 0; i < dangerousCommands.length; i++) {
+            if (cmdInput.includes(dangerousCommands[i])) {
+                return confirm(
+                    "⚠️ HIGH RISK COMMAND DETECTED!\n\n" +
+                    "You are about to execute: 'wp " + cmdInput + "'\n\n" +
+                    "This action can permanently alter or delete database/site data.\n\n" +
+                    "Are you sure you want to proceed?"
+                );
+            }
+        }
+        return true;
+    }
+
     function setAndSubmitCommand(cmd) {
         document.getElementById('wp_cli_command').value = cmd;
-        document.getElementById('wp_cli_form').submit();
+        if (validateCommandExecution()) {
+            document.getElementById('wp_cli_form').submit();
+        }
     }
     </script>
     <?php
