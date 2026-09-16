@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Admin WP-CLI Console
- * Description: High-efficiency WP-CLI runner featuring permanent command caching (manual rescan only), top-level command input, and an on-demand dropdown reference table.
- * Version: 1.8.0
+ * Description: High-efficiency WP-CLI runner with auto-detected Remi/LiquidWeb/cPanel/SiteGround PHP binary paths, robust WP-CLI binary resolution, permanent command caching, and an on-demand dropdown reference table.
+ * Version: 2.3.0
  * Author: Custom
  * License: GPL-2.0+
  */
@@ -22,6 +22,89 @@ add_action('admin_menu', function() {
         80
     );
 });
+
+/**
+ * Detect the actual PHP CLI binary across Remi Repository (LiquidWeb), cPanel, SiteGround, or generic environments.
+ */
+function wp_cli_console_get_php_binary() {
+    // 1. Check Remi Repository paths (LiquidWeb / Enterprise Linux)
+    $remi_paths = [
+        '/opt/remi/php83/root/usr/bin/php',
+        '/opt/remi/php82/root/usr/bin/php',
+        '/opt/remi/php81/root/usr/bin/php',
+        '/opt/remi/php80/root/usr/bin/php',
+    ];
+
+    foreach ($remi_paths as $path) {
+        if (@file_exists($path) && @is_executable($path)) {
+            return $path;
+        }
+    }
+
+    // 2. Check LiquidWeb / cPanel EasyApache 4 MultiPHP paths
+    $liquidweb_paths = [
+        '/opt/cpanel/ea-php83/root/usr/bin/php',
+        '/opt/cpanel/ea-php82/root/usr/bin/php',
+        '/opt/cpanel/ea-php81/root/usr/bin/php',
+        '/opt/cpanel/ea-php80/root/usr/bin/php',
+    ];
+
+    foreach ($liquidweb_paths as $path) {
+        if (@file_exists($path) && @is_executable($path)) {
+            return $path;
+        }
+    }
+
+    // 3. Check SiteGround specific PHP paths
+    $sg_paths = [
+        '/usr/local/php83/bin/php-cli',
+        '/usr/local/php83/bin/php',
+        '/usr/local/php82/bin/php-cli',
+        '/usr/local/php82/bin/php',
+        '/usr/local/php81/bin/php-cli',
+        '/usr/local/php81/bin/php',
+    ];
+
+    foreach ($sg_paths as $path) {
+        if (@file_exists($path) && @is_executable($path)) {
+            return $path;
+        }
+    }
+
+    // 4. Fallback to PHP_BINARY only if it is NOT php-fpm
+    if (defined('PHP_BINARY') && !empty(PHP_BINARY) && strpos(PHP_BINARY, 'php-fpm') === false && strpos(PHP_BINARY, 'php') !== false) {
+        return PHP_BINARY;
+    }
+
+    // 5. Default system fallback
+    return 'php';
+}
+
+/**
+ * Locate the explicit path to the WP-CLI executable on the server.
+ */
+function wp_cli_console_get_wp_cli_path() {
+    $common_paths = [
+        '/usr/local/bin/wp',
+        '/usr/bin/wp',
+        '/usr/local/bin/wp-cli.phar',
+        '/home/siteground/bin/wp',
+    ];
+
+    foreach ($common_paths as $path) {
+        if (@file_exists($path) && @is_executable($path)) {
+            return $path;
+        }
+    }
+
+    // Try finding via shell 'which'
+    $which_wp = trim(shell_exec('which wp 2>/dev/null'));
+    if (!empty($which_wp) && @file_exists($which_wp)) {
+        return $which_wp;
+    }
+
+    return 'wp';
+}
 
 /**
  * Audit Log Helper
@@ -45,18 +128,20 @@ function wp_cli_console_log_command($command) {
  * Dynamic Discovery Engine (Permanent Cache with Manual Refresh)
  */
 function wp_cli_console_get_discovered_commands($force_refresh = false) {
-    $cache_key = 'wp_cli_discovered_commands_v4';
+    $cache_key = 'wp_cli_discovered_commands_v9';
     $cached = get_transient($cache_key);
 
-    // Serve from cache indefinitely unless a manual rescan is triggered
     if (!$force_refresh && $cached !== false) {
         return $cached;
     }
 
     $discovered = [];
     $core_namespaces = ['help', 'cli', 'config', 'core', 'cron', 'db', 'embed', 'eval', 'eval-file', 'export', 'import', 'language', 'media', 'menu', 'network', 'option', 'package', 'plugin', 'post', 'post-type', 'rewrite', 'role', 'search-replace', 'server', 'sidebar', 'site', 'super-admin', 'taxonomy', 'term', 'theme', 'transient', 'user', 'widget'];
+    
+    $php_binary = escapeshellarg(wp_cli_console_get_php_binary());
+    $wp_cli = escapeshellarg(wp_cli_console_get_wp_cli_path());
+    $wp_path = escapeshellarg(ABSPATH);
 
-    // Method A: Direct PHP Reflection if WP_CLI is loaded
     if (class_exists('WP_CLI')) {
         $root = WP_CLI::get_root_command();
         $subcommands = $root->get_subcommands();
@@ -79,11 +164,8 @@ function wp_cli_console_get_discovered_commands($force_refresh = false) {
                 'subcommands' => $sub_list
             ];
         }
-    } 
-    // Method B: Parse 'wp help' text blocks via shell_exec
-    else {
-        $wp_path = escapeshellarg(ABSPATH);
-        $raw_help = shell_exec("wp help --path={$wp_path} 2>&1");
+    } else {
+        $raw_help = shell_exec("WP_CLI_PHP={$php_binary} {$php_binary} {$wp_cli} help --path={$wp_path} 2>&1");
 
         if (!empty($raw_help) && preg_match('/SUBCOMMANDS\s*\n\n(.*?)\n\nGLOBAL PARAMETERS/s', $raw_help, $matches)) {
             $subcommands_block = $matches[1];
@@ -115,7 +197,7 @@ function wp_cli_console_get_discovered_commands($force_refresh = false) {
             }
 
             foreach ($discovered as $name => $data) {
-                $raw_sub_help = shell_exec("wp help " . escapeshellcmd($name) . " --path={$wp_path} 2>&1");
+                $raw_sub_help = shell_exec("WP_CLI_PHP={$php_binary} {$php_binary} {$wp_cli} help " . escapeshellcmd($name) . " --path={$wp_path} 2>&1");
                 if (preg_match('/SUBCOMMANDS\s*\n\n(.*?)\n\n/s', $raw_sub_help, $sub_matches)) {
                     $sub_lines = explode("\n", $sub_matches[1]);
                     $sub_list = [];
@@ -134,9 +216,7 @@ function wp_cli_console_get_discovered_commands($force_refresh = false) {
         }
     }
 
-    // Set transient to NEVER expire automatically (0 = no expiration)
     set_transient($cache_key, $discovered, 0);
-
     return $discovered;
 }
 
@@ -152,19 +232,16 @@ function wp_cli_console_render_page() {
     $json_data = null;
     $last_command = '';
 
-    // Handle Manual Rescan Request
     if (isset($_POST['refresh_cli_discovery']) && check_admin_referer('refresh_cli_action', 'refresh_cli_nonce')) {
         wp_cli_console_get_discovered_commands(true);
         echo '<div class="notice notice-success is-dismissible"><p>WP-CLI command tree rescanned and permanently cached!</p></div>';
     }
 
-    // Handle Clearing Logs
     if (isset($_POST['clear_wp_cli_logs']) && check_admin_referer('clear_wp_cli_logs_action', 'clear_logs_nonce')) {
         update_option('wp_cli_console_logs', []);
         echo '<div class="notice notice-success is-dismissible"><p>Audit logs cleared.</p></div>';
     }
 
-    // Handle Command Execution
     if (isset($_POST['wp_cli_command']) && check_admin_referer('run_wp_cli_action', 'wp_cli_nonce')) {
         $raw_input = trim($_POST['wp_cli_command']);
         $last_command = $raw_input;
@@ -188,7 +265,12 @@ function wp_cli_console_render_page() {
             wp_cli_console_log_command($raw_input);
 
             $wp_path = escapeshellarg(ABSPATH);
-            $cmd = "wp " . $clean_command . " --path={$wp_path} 2>&1";
+            $detected_php = wp_cli_console_get_php_binary();
+            $php_binary = escapeshellarg($detected_php);
+            $wp_cli_binary = escapeshellarg(wp_cli_console_get_wp_cli_path());
+
+            // Build execution string: WP_CLI_PHP=/path/to/php /path/to/php /path/to/wp command --path=/path/to/wp
+            $cmd = "WP_CLI_PHP={$php_binary} {$php_binary} {$wp_cli_binary} " . $clean_command . " --path={$wp_path} 2>&1";
             $raw_output = trim(shell_exec($cmd));
 
             $decoded = json_decode($raw_output, true);
@@ -201,7 +283,6 @@ function wp_cli_console_render_page() {
     $logs = get_option('wp_cli_console_logs', []);
     $discovered_commands = wp_cli_console_get_discovered_commands();
 
-    // Default Core Shortcuts List
     $core_shortcuts = [
         ['command' => 'cache flush', 'description' => 'Flush object cache'],
         ['command' => 'plugin list --format=json', 'description' => 'List all plugins in table view'],
@@ -212,7 +293,11 @@ function wp_cli_console_render_page() {
     ?>
     <div class="wrap">
         <h1><span class="dashicons dashicons-terminal" style="font-size:30px; width:30px; height:30px;"></span> WP-CLI Console</h1>
-        <p style="margin-bottom: 20px;">Run CLI commands directly from your dashboard.</p>
+        <p style="margin-bottom: 5px;">Run CLI commands directly from your dashboard.</p>
+        <p style="font-size: 12px; color: #646970; margin-top: 0; margin-bottom: 20px;">
+            <strong>Detected PHP Engine:</strong> <code><?php echo esc_html(wp_cli_console_get_php_binary()); ?></code> | 
+            <strong>Detected WP-CLI Binary:</strong> <code><?php echo esc_html(wp_cli_console_get_wp_cli_path()); ?></code>
+        </p>
 
         <!-- 1. PRIMARY INPUT FORM (TOP OF PAGE) -->
         <form method="post" action="" id="wp_cli_form" onsubmit="return validateCommandExecution();">
@@ -272,7 +357,6 @@ function wp_cli_console_render_page() {
                 </select>
             </div>
 
-            <!-- Dynamic 2-Column Reference Table -->
             <div id="reference_table_container" style="display: none;">
                 <table class="wp-list-table widefat fixed striped" style="margin-top: 5px;">
                     <thead>
@@ -281,9 +365,7 @@ function wp_cli_console_render_page() {
                             <th><strong>Description</strong></th>
                         </tr>
                     </thead>
-                    <tbody id="reference_table_body">
-                        <!-- Populated via Javascript -->
-                    </tbody>
+                    <tbody id="reference_table_body"></tbody>
                 </table>
             </div>
         </div>
@@ -324,7 +406,6 @@ function wp_cli_console_render_page() {
         <?php endif; ?>
     </div>
 
-    <!-- DATA STORE FOR JAVASCRIPT -->
     <script>
     const cliCommandData = {
         core_shortcuts: <?php echo json_encode($core_shortcuts); ?>,
