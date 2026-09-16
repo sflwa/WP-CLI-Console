@@ -3,12 +3,12 @@ Contributors: custom
 Tags: wp-cli, console, admin, terminal, maintenance
 Requires at least: 5.0
 Tested up to: 6.6
-Stable tag: 1.8.0
+Stable tag: 2.3.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Execute WP-CLI commands directly from your WordPress dashboard with zero-latency caching, auto-discovered plugin commands, and safety confirmations.
+Execute WP-CLI commands directly from your WordPress dashboard with multi-environment PHP detection, zero-latency caching, auto-discovered plugin commands, and safety confirmations.
 
 == Description ==
 
@@ -16,6 +16,8 @@ Admin WP-CLI Console brings the power of the WordPress Command Line Interface (W
 
 = Key Features =
 
+* **Multi-Host PHP Engine Auto-Detection:** Automatically locates and forces execution through your active web server PHP CLI binary (supporting Remi Repository, LiquidWeb MultiPHP, cPanel EasyApache 4, SiteGround, and custom environments) to prevent version mismatch errors (e.g., executing on system PHP 7.1 instead of 8.3).
+* **Robust WP-CLI Binary Resolver:** Dynamically resolves physical paths to the `wp` or `wp-cli.phar` executable on the host server.
 * **Top-Level Input Form:** Primary command bar positioned at the top of the dashboard for rapid execution.
 * **On-Demand Dropdown Helper:** High-density, 2-column reference table (`Command` | `Description`) populated via an interactive dropdown menu to keep the UI clean.
 * **Zero-Latency Permanent Caching:** Auto-discovered plugin subcommands are permanently cached in WordPress transients so page loads remain instantaneous. Re-scan on demand with a single click.
@@ -36,7 +38,13 @@ Admin WP-CLI Console brings the power of the WordPress Command Line Interface (W
 == Frequently Asked Questions ==
 
 = Does this plugin require WP-CLI to be installed on the server? =
-Yes. The web server host must have the `wp` CLI binary installed in its system PATH and PHP execution functions (`shell_exec` / `exec`) enabled.
+Yes. The web server host must have the `wp` CLI binary installed in its system PATH (or standard binary directories) and PHP execution functions (`shell_exec` / `exec`) enabled.
+
+= Why does it show my detected PHP engine and WP-CLI binary at the top of the page? =
+Web server environments (like LiquidWeb, cPanel, or SiteGround) often run a different PHP version for HTTP requests than the default CLI terminal user. The console detects your active web server PHP CLI binary (e.g., `/opt/remi/php83/root/usr/bin/php`) and environment binary path to guarantee commands execute under your intended PHP version rather than a legacy system fallback.
+
+= What is the minimum PHP version required? =
+While the plugin code itself requires PHP 7.4 or higher, it dynamically binds execution to whatever PHP version your site is running under (up to PHP 8.3+).
 
 = How do I render clean HTML tables instead of raw terminal text? =
 Append `--format=json` to list commands (e.g., `plugin list --format=json` or `user list --format=json`) and the plugin will automatically parse the JSON into a styled WordPress admin table.
@@ -48,6 +56,17 @@ The plugin permanently caches all discovered subcommands in a WordPress transien
 Yes. It uses strict capability checks (`administrator`), incorporates WordPress security nonces for cross-site request forgery protection, logs every command executed by timestamp and username, and alerts the admin before running high-risk destructive commands.
 
 == Changelog ==
+
+= 2.3.0 =
+* Added dynamic WP-CLI binary path resolver (`wp_cli_console_get_wp_cli_path()`) to fix `Could not open input file` execution errors across cPanel/LiquidWeb hosts.
+* Added environmental diagnostic header displaying detected PHP Engine and WP-CLI binary paths.
+
+= 2.2.0 =
+* Added Remi Repository PHP paths (`/opt/remi/php8*/root/usr/bin/php`) for LiquidWeb and Enterprise Linux environments.
+* Added filter to prevent `PHP_BINARY` from accidentally resolving to `php-fpm`.
+
+= 2.1.0 =
+* Added LiquidWeb / cPanel EasyApache 4 MultiPHP path auto-detection (`/opt/cpanel/ea-php*/root/usr/bin/php`).
 
 = 1.8.0 =
 * Updated discovery transient caching to permanent mode (`0` expiration) to eliminate page-load delays. Command re-scans are now strictly on-demand.
